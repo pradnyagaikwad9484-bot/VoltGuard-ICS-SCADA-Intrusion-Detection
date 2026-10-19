@@ -112,6 +112,20 @@ The `reports/` directory is included in the repository for storing generated rep
 
 The project repository contains the main application, telemetry simulator, detection logic, reporting module, sample dataset, dashboard, and automated test file.
 
+## Using the VoltGuard Dashboard
+
+1. Install the project dependencies using `pip install -r requirements.txt`.
+2. Start the dashboard using `python -m streamlit run app.py`.
+3. Upload a telemetry CSV file or use the available sample dataset.
+4. Review the dashboard metrics, visualizations, severity distribution, and flagged events.
+5. Generate reports if the reporting feature is available in the current version.
+
+## Data and Safety Notes
+
+- Use synthetic or authorized telemetry data for testing.
+- Review flagged events before drawing conclusions.
+- VoltGuard is an educational prototype and should not be used as the sole security control for real industrial systems.
+
 **Note:** The presence of the automated test file does not by itself confirm that all tests pass. Run the test command to verify the results.
 
 ## Disclaimer
