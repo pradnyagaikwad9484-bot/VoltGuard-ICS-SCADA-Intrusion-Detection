@@ -1,3 +1,4 @@
+import json
 import pandas as pd
 import pytest
 from voltguard.simulator import generate_telemetry
@@ -41,3 +42,19 @@ def test_report_export_creates_files(tmp_path):
     result = analyze_telemetry(generate_telemetry(80, .05, 4), seed=4)
     csv_path, json_path = export_reports(result, tmp_path)
     assert csv_path.exists() and json_path.exists()
+
+def test_report_export_creates_valid_json(tmp_path):
+    result = analyze_telemetry(
+        generate_telemetry(80, .05, 4),
+        seed=4
+    )
+
+    csv_path, json_path = export_reports(result, tmp_path)
+
+    assert csv_path.exists()
+    assert json_path.exists()
+
+    with json_path.open("r", encoding="utf-8") as file:
+        data = json.load(file)
+
+    assert data is not None
