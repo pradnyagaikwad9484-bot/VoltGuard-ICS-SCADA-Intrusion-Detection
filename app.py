@@ -1,96 +1,113 @@
-import json
-from datetime import datetime
-import pandas as pd
-import streamlit as st
-import matplotlib.pyplot as plt
+                "rule_pressure_spike", "statistical_anomaly"
+            ] if c in results.columns]
+            if signal_cols:
+                signal_counts = results[signal_cols].fillna(False).astype(bool).sum().sort_values(ascending=False)
+                signal_counts.index = [name.replace("rule_", "").replace("_", " ").title() for name in signal_counts.index]
+                st.bar_chart(signal_counts)
 
-from voltguard.simulator import generate_telemetry
-from voltguard.detector import analyze_telemetry
-from voltguard.reporting import export_reports
+        st.markdown("#### Highest risk records")
+        high_risk = results.sort_values(["risk_score"], ascending=False).head(10)
+        display_cols = [c for c in ["timestamp", "risk_score", "severity", "rule_flag_count", "statistical_anomaly"] if c in high_risk.columns]
+        st.dataframe(high_risk[display_cols], use_container_width=True, hide_index=True)
 
-st.set_page_config(
-    page_title="VoltGuard | ICS/SCADA Security",
-    page_icon="🛡️",
-    layout="wide",
-    initial_sidebar_state="expanded",
+    with tab_events:
+        st.markdown("#### Investigate flagged telemetry")
+        if flagged.empty:
+            st.success("No records were flagged by the current configuration.")
+        else:
+            filter_severity = st.multiselect(
+                "Filter by severity",
+                ["LOW", "MEDIUM", "HIGH", "CRITICAL"],
+                default=["MEDIUM", "HIGH", "CRITICAL"],
+            )
+            filtered = flagged[flagged["severity"].astype(str).isin(filter_severity)]
+            st.caption(f"Showing {len(filtered):,} of {len(flagged):,} flagged records.")
+            event_cols = [c for c in [
+                "timestamp", "tank_level_pct", "inlet_valve_open", "inlet_flow_lpm",
+                "outlet_flow_lpm", "pressure_bar", "temperature_c", "rule_flag_count",
+                "statistical_anomaly", "risk_score", "severity", "anomaly_type"
+            ] if c in filtered.columns]
+            st.dataframe(filtered[event_cols], use_container_width=True, hide_index=True)
+            st.download_button(
+                "Download filtered events CSV",
+                make_csv(filtered),
+                "voltguard_flagged_events.csv",
+                "text/csv",
+                use_container_width=True,
+            )
+            if "rule_flag_count" in filtered.columns:
+                with st.expander("Explain detection rules"):
+                    st.write("- **Out of range:** level or pressure outside the prototype limits.")
+                    st.write("- **Level jump:** absolute change in tank level exceeds the illustrative threshold.")
+                    st.write("- **Valve/flow mismatch:** inlet valve is closed while inlet flow is unusually high.")
+                    st.write("- **Pressure spike:** pressure differs substantially from its rolling median.")
+                    st.write("- **Statistical anomaly:** Isolation Forest marks the record as an outlier.")
+                    st.caption("A flagged record is a review signal, not proof of malicious activity.")
+
+    with tab_data:
+        st.markdown("#### Telemetry data")
+        search = st.text_input("Search table values (optional)", placeholder="e.g. CRITICAL or sensor_spike")
+        view = results
+        if search:
+            mask = view.astype(str).apply(lambda col: col.str.contains(search, case=False, na=False)).any(axis=1)
+            view = view[mask]
+        st.caption(f"{len(view):,} records shown")
+        st.dataframe(view, use_container_width=True, hide_index=True)
+        st.download_button(
+            "Download complete analyzed dataset CSV",
+            make_csv(results),
+            "voltguard_analysis.csv",
+            "text/csv",
+            use_container_width=True,
+        )
+
+    with tab_reports:
+        st.markdown("#### Export results")
+        st.write("Download an analysis CSV and a compact JSON summary for your project documentation.")
+        st.download_button(
+            "⬇ Download analysis CSV",
+            make_csv(results),
+            "voltguard_analysis.csv",
+            "text/csv",
+            use_container_width=True,
+        )
+        st.download_button(
+            "⬇ Download summary JSON",
+            json.dumps(summary, indent=2),
+            "voltguard_summary.json",
+            "application/json",
+            use_container_width=True,
+        )
+        if st.button("Save reports inside project folder", use_container_width=True):
+            try:
+                csv_path, json_path = export_reports(results)
+                st.success(f"Reports saved to `{csv_path}` and `{json_path}`.")
+            except Exception as exc:
+                st.error(f"Could not save reports: {exc}")
+        st.json(summary)
+
+    with tab_method:
+        st.markdown("#### How VoltGuard works")
+        st.markdown("""
+        1. **Input:** synthetic or user-provided telemetry.
+        2. **Physics-aware rules:** inspect process values and simple actuator/sensor relationships.
+        3. **Statistical detection:** Isolation Forest flags multivariate outliers.
+        4. **Risk score:** combines rule flags and the statistical signal using prototype weights.
+        5. **Review:** findings are presented for human investigation and exported for documentation.
+        """)
+        st.info(
+            "Risk score and severity are heuristic demonstration labels, not calibrated probabilities "
+            "or an industry-standard OT risk rating."
+        )
+        st.markdown("**Required telemetry schema**")
+        st.code(", ".join(sorted(required)), language="text")
+        st.markdown("**Known limitations**")
+        st.write("- Synthetic data does not represent all real industrial behavior.")
+        st.write("- An anomaly can be caused by noise, a fault, a configuration issue, or an attack.")
+        st.write("- The prototype is not validated for real-world or safety-critical use.")
+
+st.markdown(
+    "<div class='footer'>VoltGuard • Defensive educational prototype • Use authorized data only • "
+    "Never use prototype alerts as the sole basis for operational decisions.</div>",
+    unsafe_allow_html=True,
 )
-
-# ---------------------------- Theme & helpers ----------------------------
-st.markdown("""
-<style>
-    .block-container {padding-top: 1.25rem; padding-bottom: 2.5rem; max-width: 1500px;}
-    [data-testid="stSidebar"] {border-right: 1px solid rgba(128,128,128,.22);}
-    .hero {
-        padding: 1.35rem 1.5rem; border-radius: 18px; margin-bottom: 1rem;
-        background: linear-gradient(120deg, rgba(15,45,75,.98), rgba(10,105,115,.94));
-        color: white; border: 1px solid rgba(255,255,255,.12);
-    }
-    .hero h1 {margin: 0; font-size: 2.05rem; letter-spacing: -.03em;}
-    .hero p {margin: .45rem 0 0 0; color: #d8edf1; font-size: 1rem;}
-    .eyebrow {font-size: .75rem; text-transform: uppercase; letter-spacing: .14em; opacity: .82;}
-    .small-muted {font-size: .86rem; opacity: .78;}
-    .metric-card {
-        padding: .9rem 1rem; border: 1px solid rgba(128,128,128,.25);
-        border-radius: 14px; min-height: 110px;
-    }
-    .metric-label {font-size: .82rem; opacity: .76; margin-bottom: .35rem;}
-    .metric-value {font-size: 1.7rem; font-weight: 700; line-height: 1.2;}
-    .metric-note {font-size: .76rem; opacity: .72; margin-top: .4rem;}
-    .section-title {font-size: 1.16rem; font-weight: 700; margin: .3rem 0 .7rem 0;}
-    .pill {
-        display:inline-block; padding:.2rem .55rem; border-radius:999px;
-        font-size:.75rem; font-weight:650; border:1px solid rgba(128,128,128,.3);
-    }
-    .footer {border-top:1px solid rgba(128,128,128,.2); padding-top: .8rem; margin-top: 2rem; font-size:.78rem; opacity:.7;}
-    div[data-testid="stMetric"] {background: rgba(128,128,128,.055); padding: .8rem 1rem; border-radius: 12px;}
-    div[data-testid="stTabs"] button {font-weight: 600;}
-</style>
-""", unsafe_allow_html=True)
-
-def metric_card(label, value, note=""):
-    st.markdown(
-        f'<div class="metric-card"><div class="metric-label">{label}</div>'
-        f'<div class="metric-value">{value}</div><div class="metric-note">{note}</div></div>',
-        unsafe_allow_html=True,
-    )
-
-def prepare_frame(df):
-    out = df.copy()
-    if "timestamp" in out.columns:
-        out["timestamp"] = pd.to_datetime(out["timestamp"], errors="coerce")
-    return out
-
-def make_csv(df):
-    return df.to_csv(index=False).encode("utf-8")
-
-def build_summary(results, source_name):
-    flagged = results[results["detected_anomaly"].astype(bool)]
-    severity_counts = {str(k): int(v) for k, v in results["severity"].value_counts().items()}
-    return {
-        "project": "VoltGuard",
-        "generated_at": datetime.now().isoformat(timespec="seconds"),
-        "source": source_name,
-        "dataset_rows": int(len(results)),
-        "flagged_rows": int(len(flagged)),
-        "flag_rate_percent": round(float(len(flagged) / max(len(results), 1) * 100), 2),
-        "severity_counts": severity_counts,
-        "limitation": "Educational prototype using synthetic or user-provided telemetry; not for safety-critical use."
-    }
-
-# ---------------------------- Sidebar ----------------------------
-with st.sidebar:
-    st.markdown("## 🛡️ VoltGuard")
-    st.caption("ICS / SCADA anomaly monitoring")
-    st.divider()
-    st.markdown("### Data source")
-    source_mode = st.radio(
-        "Choose input",
-        ["Generate synthetic data", "Upload telemetry CSV"],
-        label_visibility="collapsed",
-    )
-
-    rows, anomaly_rate, contamination, seed = 1000, 0.04, 0.04, 42
-    uploaded = None
-    if source_mode == "Generate synthetic data":
-        rows = st.slider("Telemetry records", 200, 5000, 1000, 100)
-        anomaly_rate = st.slider("Injected anomaly rate", 0.01, 0.20, 0.04, 0.01)
