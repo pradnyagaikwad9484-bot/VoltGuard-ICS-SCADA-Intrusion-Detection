@@ -1,3 +1,4 @@
+
 import json
 from datetime import datetime
 
@@ -163,11 +164,13 @@ def make_csv(df):
 
 
 def build_summary(results, source_name):
-    flagged = results[results["detected_anomaly"].astype(bool)]
+    flagged = results[
+        results["detected_anomaly"].fillna(False).astype(bool)
+    ]
 
     severity_counts = {
         str(key): int(value)
-        for key, value in results["severity"].value_counts().items()
+        for key, value in results["severity"].fillna("Unknown").value_counts().items()
     }
 
     return {
@@ -176,6 +179,7 @@ def build_summary(results, source_name):
         "source": source_name,
         "dataset_rows": int(len(results)),
         "flagged_rows": int(len(flagged)),
+        "normal_rows": int(len(results) - len(flagged)),
         "flag_rate_percent": round(
             float(len(flagged) / max(len(results), 1) * 100),
             2,
@@ -338,31 +342,29 @@ if run:
     try:
         if source_mode == "Upload telemetry CSV":
 
-            # Validate upload
             if uploaded is None:
                 st.error("Upload a CSV file first.")
                 st.stop()
 
-            # Read CSV safely
             try:
                 data = pd.read_csv(uploaded)
+
             except pd.errors.EmptyDataError:
                 st.error(
                     "The uploaded CSV file is empty or has no readable columns."
                 )
                 st.stop()
+
             except Exception as exc:
                 st.error(f"Could not read the CSV file: {exc}")
                 st.stop()
 
-            # Validate empty dataset
             if data.empty:
                 st.error(
                     "The uploaded CSV file contains no data rows."
                 )
                 st.stop()
 
-            # Validate required columns
             missing = required - set(data.columns)
 
             if missing:
@@ -372,7 +374,6 @@ if run:
                 )
                 st.stop()
 
-            # Validate timestamp values
             data["timestamp"] = pd.to_datetime(
                 data["timestamp"],
                 errors="coerce",
@@ -389,14 +390,12 @@ if run:
                 )
                 st.stop()
 
-            # Validate numeric telemetry columns
             for column in numeric_columns:
                 data[column] = pd.to_numeric(
                     data[column],
                     errors="coerce",
                 )
 
-            # Find columns containing invalid or missing numeric values
             invalid_columns = [
                 column
                 for column in numeric_columns
@@ -410,7 +409,6 @@ if run:
                 )
                 st.stop()
 
-            # Validate infinite numeric values
             infinite_columns = [
                 column
                 for column in numeric_columns
@@ -440,7 +438,6 @@ if run:
                 f"Synthetic dataset (seed {int(seed)})"
             )
 
-        # Run detector
         with st.spinner(
             "Analyzing telemetry and scoring potential anomalies..."
         ):
@@ -450,7 +447,6 @@ if run:
                 seed=int(seed),
             )
 
-        # Save results in session state
         st.session_state.results = prepare_frame(results)
         st.session_state.raw_data = prepare_frame(data)
         st.session_state.source_name = source_name
@@ -517,7 +513,7 @@ else:
     results = prepare_frame(results)
 
     flagged = results[
-        results["detected_anomaly"].astype(bool)
+        results["detected_anomaly"].fillna(False).astype(bool)
     ].copy()
 
     source_name = st.session_state.source_name
@@ -598,6 +594,76 @@ else:
 
     with tab_overview:
 
+        # Detection overview
+        st.markdown("#### Anomaly detection overview")
+
+        total_records = len(results)
+
+        flagged_records = int(
+            results["detected_anomaly"]
+            .fillna(False)
+            .astype(bool)
+            .sum()
+        )
+
+        normal_records = total_records - flagged_records
+
+        flag_rate = (
+            flagged_records / max(total_records, 1) * 100
+        )
+
+        gauge_col1, gauge_col2 = st.columns([1, 2])
+
+        with gauge_col1:
+            fig, ax = plt.subplots(figsize=(4, 2.8))
+
+            ax.pie(
+                [flagged_records, normal_records],
+                startangle=90,
+                counterclock=False,
+                wedgeprops={"width": 0.35},
+            )
+
+            ax.text(
+                0,
+                0,
+                f"{flag_rate:.1f}%\nFlagged",
+                ha="center",
+                va="center",
+                fontsize=15,
+                fontweight="bold",
+            )
+
+            ax.set_title("Anomaly flag rate")
+
+            st.pyplot(
+                fig,
+                clear_figure=True,
+            )
+
+            plt.close(fig)
+
+        with gauge_col2:
+            st.metric(
+                "Normal records",
+                f"{normal_records:,}",
+            )
+
+            st.metric(
+                "Flagged records",
+                f"{flagged_records:,}",
+            )
+
+            st.progress(
+                min(max(flag_rate / 100, 0.0), 1.0)
+            )
+
+            st.caption(
+                "Flag rate is a detector output, not an attack probability."
+            )
+
+        st.divider()
+
         chart_left, chart_right = st.columns([1.5, 1])
 
         with chart_left:
@@ -625,7 +691,7 @@ else:
                 )
 
                 points = plot_df[
-                    plot_df["detected_anomaly"].astype(bool)
+                    plot_df["detected_anomaly"].fillna(False).astype(bool)
                 ]
 
                 if not points.empty:
@@ -647,7 +713,7 @@ else:
                 )
 
                 points = plot_df[
-                    plot_df["detected_anomaly"].astype(bool)
+                    plot_df["detected_anomaly"].fillna(False).astype(bool)
                 ]
 
                 if not points.empty:
@@ -690,6 +756,40 @@ else:
             )
 
             plt.close(fig)
+
+            # Multi-sensor telemetry visualization
+            st.markdown("#### Multi-sensor telemetry trends")
+
+            sensor_columns = [
+                "pressure_bar",
+                "temperature_c",
+                "inlet_flow_lpm",
+                "outlet_flow_lpm",
+            ]
+
+            available_sensors = [
+                column
+                for column in sensor_columns
+                if column in results.columns
+            ]
+
+            if available_sensors:
+                selected_sensors = st.multiselect(
+                    "Select sensors to visualize",
+                    available_sensors,
+                    default=available_sensors[:2],
+                    key="overview_sensor_selection",
+                )
+
+                if selected_sensors:
+                    st.line_chart(
+                        results[selected_sensors].reset_index(drop=True),
+                        use_container_width=True,
+                    )
+                else:
+                    st.info(
+                        "Select at least one sensor to display its trend."
+                    )
 
         with chart_right:
             st.markdown("#### Severity distribution")
@@ -754,31 +854,34 @@ else:
 
         st.markdown("#### Highest risk records")
 
-        high_risk = (
-            results.sort_values(
-                ["risk_score"],
-                ascending=False,
+        if "risk_score" in results.columns:
+            high_risk = (
+                results.sort_values(
+                    ["risk_score"],
+                    ascending=False,
+                )
+                .head(10)
             )
-            .head(10)
-        )
 
-        display_cols = [
-            column
-            for column in [
-                "timestamp",
-                "risk_score",
-                "severity",
-                "rule_flag_count",
-                "statistical_anomaly",
+            display_cols = [
+                column
+                for column in [
+                    "timestamp",
+                    "risk_score",
+                    "severity",
+                    "rule_flag_count",
+                    "statistical_anomaly",
+                ]
+                if column in high_risk.columns
             ]
-            if column in high_risk.columns
-        ]
 
-        st.dataframe(
-            high_risk[display_cols],
-            use_container_width=True,
-            hide_index=True,
-        )
+            st.dataframe(
+                high_risk[display_cols],
+                use_container_width=True,
+                hide_index=True,
+            )
+        else:
+            st.info("Risk score is not available in this result dataset.")
 
 
     # ---------------------------- Flagged events tab ----------------------------
